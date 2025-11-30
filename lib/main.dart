@@ -2,17 +2,28 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:comma/core/theme/app_theme.dart'; // 방금 만든 테마 불러오기
+import 'package:firebase_core/firebase_core.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // [필수] 저장소
+import 'package:comma/firebase_options.dart';
+import 'package:comma/core/theme/app_theme.dart';
 import 'package:comma/screens/home/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 상단 상태바(배터리, 시간) 투명하게 만들기 (몰입감 UP)
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // [NEW] 설치 날짜 저장 로직
+  final prefs = await SharedPreferences.getInstance();
+  if (prefs.getString('first_run_date') == null) {
+    // 저장된 날짜가 없으면(첫 실행이면) 지금 시간을 저장
+    await prefs.setString('first_run_date', DateTime.now().toIso8601String());
+  }
+
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light, // 아이콘은 흰색
+      statusBarIconBrightness: Brightness.light,
     ),
   );
 
@@ -25,12 +36,10 @@ class CommaApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Comma', // 앱 이름
-      debugShowCheckedModeBanner: false, // 디버그 띠 제거
-      // 디자인 시스템 적용
+      title: 'Comma',
+      debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
-      themeMode: ThemeMode.dark, // 다크모드 강제
-      // 임시 홈 화면 (다음 단계에서 멋지게 바꿀 예정)
+      themeMode: ThemeMode.dark,
       home: const HomeScreen(),
     );
   }

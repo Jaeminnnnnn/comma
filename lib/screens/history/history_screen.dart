@@ -9,10 +9,9 @@ class HistoryScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // 임시 데이터 (나중엔 현재 진행 상황에 따라 달라짐)
-    final int currentPhase = 2; // 현재 Phase 2 진행 중이라고 가정
+    final int currentPhase = 2;
 
     return Scaffold(
-      // [수정] nightStart -> bgStart 로 변경
       backgroundColor: AppTheme.bgStart,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -28,14 +27,37 @@ class HistoryScreen extends StatelessWidget {
       ),
       body: ListView.separated(
         padding: const EdgeInsets.all(24),
-        itemCount: 4, // 총 4개의 페이즈
+        itemCount: 8, // 7개 페이즈 + 1개(안내 문구)
         separatorBuilder: (context, index) => const SizedBox(height: 16),
         itemBuilder: (context, index) {
+          // 마지막 아이템은 텍스트만 표시
+          if (index == 7) {
+            return _buildComingSoonText();
+          }
+
           int phaseNum = index + 1;
-          bool isUnlocked = phaseNum < currentPhase; // 지나간 페이즈만 열람 가능
+          bool isUnlocked = phaseNum < currentPhase;
 
           return _buildPhaseItem(context, phaseNum, isUnlocked);
         },
+      ),
+    );
+  }
+
+  // [수정됨] 카드/아이콘 없이 텍스트만 깔끔하게 표시
+  Widget _buildComingSoonText() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 40, bottom: 20), // 위아래 여백을 줘서 숨통을 틔움
+      child: Center(
+        child: Text(
+          "새로운 페이즈가 추가될 예정이에요",
+          style: GoogleFonts.lato(
+            color: AppTheme.softGrey.withOpacity(0.4), // 아주 은은하게
+            fontSize: 12,
+            letterSpacing: 1.0,
+            fontWeight: FontWeight.w300,
+          ),
+        ),
       ),
     );
   }
@@ -44,10 +66,9 @@ class HistoryScreen extends StatelessWidget {
     return GestureDetector(
       onTap: isUnlocked
           ? () {
-              // [클릭] 리포트 화면을 '투명한 라우트'로 띄워서 뒤가 비치게 함
               Navigator.of(context).push(
                 PageRouteBuilder(
-                  opaque: false, // 투명 배경 허용
+                  opaque: false,
                   pageBuilder: (_, __, ___) =>
                       PhaseReportScreen(phaseNumber: phaseNum),
                   transitionsBuilder: (_, anim, __, child) {
@@ -62,7 +83,7 @@ class HistoryScreen extends StatelessWidget {
         decoration: BoxDecoration(
           color: isUnlocked
               ? Colors.white.withOpacity(0.05)
-              : Colors.white.withOpacity(0.02), // 잠긴 건 더 어둡게
+              : Colors.white.withOpacity(0.02),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
             color: isUnlocked
@@ -72,15 +93,12 @@ class HistoryScreen extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // 아이콘
             Icon(
               isUnlocked ? Icons.auto_awesome : Icons.lock_outline,
               color: isUnlocked ? AppTheme.warmWhite : AppTheme.softGrey,
               size: 20,
             ),
             const SizedBox(width: 16),
-
-            // 텍스트
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -102,9 +120,7 @@ class HistoryScreen extends StatelessWidget {
                 ),
               ],
             ),
-
             const Spacer(),
-
             if (isUnlocked)
               const Icon(
                 Icons.arrow_forward_ios,
@@ -127,6 +143,12 @@ class HistoryScreen extends StatelessWidget {
         return "나를 돌보는 마음";
       case 4:
         return "일상의 결 정돈하기";
+      case 5:
+        return "새로운 시선";
+      case 6:
+        return "소음 줄이기";
+      case 7:
+        return "단단한 중심";
       default:
         return "";
     }

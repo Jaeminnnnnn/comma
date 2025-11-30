@@ -1,5 +1,8 @@
+import 'dart:async'; // 타이머용
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // 저장소
 import 'package:comma/core/theme/app_theme.dart';
 import 'package:comma/screens/report/phase_report_screen.dart';
 import 'package:comma/screens/history/history_screen.dart';
@@ -12,18 +15,27 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
-  final int day = 1; // [Tip] 테스트용
+  // [수정] 이제 day는 고정값이 아니라 계산된 값이 들어갑니다.
+  int day = 1;
+  String _timeRemaining = "00:00:00"; // 남은 시간 표시용
 
-  final String question = "오늘,\n누군가에게 건넨\n첫 마디가\n상냥했나요?";
+  String question = "";
+  bool _isLoading = true;
   bool _isAnswered = false;
   String? _myAnswer;
 
+  // 실시간 통계
+  int _currentYesCount = 0;
+  int _currentNoCount = 0;
+
   late AnimationController _statsFadeController;
   late Animation<double> _statsFadeAnimation;
+  Timer? _timer; // 1초마다 가는 타이머
 
   @override
   void initState() {
     super.initState();
+
     _statsFadeController = AnimationController(
       duration: const Duration(milliseconds: 1500),
       vsync: this,
@@ -33,11 +45,190 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       curve: Curves.easeOutQuart,
     );
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if ((day - 1) % 7 == 0 && day > 1) {
+    // 1. Day 계산 및 데이터 로딩 시작
+    _initializeDayAndData();
+
+    // 2. 1초마다 남은 시간 갱신 (다음 밤 9시까지)
+    _startTimer();
+  }
+
+  // [초기화] 앱 켤 때 Day 계산 (밤 9시 기준)
+  Future<void> _initializeDayAndData() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    String? dateString = prefs.getString('first_run_date');
+    if (dateString == null) {
+      dateString = DateTime.now().toIso8601String();
+      await prefs.setString('first_run_date', dateString);
+    }
+
+    DateTime installTime = DateTime.parse(dateString);
+    DateTime now = DateTime.now();
+
+    // 1. 기준 시간 복구: 설치일의 '밤 9시'
+    DateTime firstNinePM = DateTime(
+      installTime.year,
+      installTime.month,
+      installTime.day,
+      21,
+      0,
+      0,
+    );
+
+    // 2. 로직 복구: 설치 시간이 이미 9시를 넘었으면 -> 첫 갱신은 내일 9시
+    if (installTime.hour >= 21) {
+      firstNinePM = firstNinePM.add(const Duration(days: 1));
+    }
+
+    if (now.isBefore(firstNinePM)) {
+      day = 1;
+    } else {
+      int daysPassed = now.difference(firstNinePM).inDays;
+      day = 2 + daysPassed;
+    }
+
+    setState(() {});
+    _loadDailyData();
+
+    if ((day - 1) % 7 == 0 && day > 1) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
         _showPhaseReportOverlay();
+      });
+    }
+  }
+
+  // [타이머] 1초마다 체크 (밤 9시 기준)
+  void _startTimer() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+      DateTime now = DateTime.now();
+
+      // 1. 보여주는 시간 목표: 오늘 밤 9시
+      DateTime targetTime = DateTime(now.year, now.month, now.day, 21, 0, 0);
+
+      if (now.isAfter(targetTime)) {
+        targetTime = targetTime.add(const Duration(days: 1));
+      }
+      Duration diff = targetTime.difference(now);
+
+      String h = diff.inHours.toString().padLeft(2, '0');
+      String m = (diff.inMinutes % 60).toString().padLeft(2, '0');
+      String s = (diff.inSeconds % 60).toString().padLeft(2, '0');
+
+      if (mounted) {
+        final prefs = await SharedPreferences.getInstance();
+        String? dateString = prefs.getString('first_run_date');
+
+        if (dateString != null) {
+          DateTime installTime = DateTime.parse(dateString);
+
+          // 2. 실제 계산 기준: 설치일의 밤 9시
+          DateTime firstNinePM = DateTime(
+            installTime.year,
+            installTime.month,
+            installTime.day,
+            21,
+            0,
+            0,
+          );
+
+          // 로직 복구: 21시 넘어서 설치했으면 내일로 미룸
+          if (installTime.hour >= 21) {
+            firstNinePM = firstNinePM.add(const Duration(days: 1));
+          }
+
+          int calculatedDay = 1;
+          if (now.isAfter(firstNinePM)) {
+            int daysPassed = now.difference(firstNinePM).inDays;
+            calculatedDay = 2 + daysPassed;
+          }
+
+          if (calculatedDay > day) {
+            print("🌙 밤 9시가 되었습니다! 새로운 질문으로 넘어갑니다.");
+            // Day 업데이트 및 데이터 새로고침
+            setState(() {
+              day = calculatedDay;
+            });
+            _loadDailyData();
+          }
+        }
+
+        setState(() {
+          _timeRemaining = "$h : $m : $s";
+        });
       }
     });
+  }
+
+  Future<void> _loadDailyData() async {
+    try {
+      String docId = "day_$day";
+
+      final prefs = await SharedPreferences.getInstance();
+      String? savedAnswer = prefs.getString(docId);
+
+      DocumentSnapshot doc = await FirebaseFirestore.instance
+          .collection('questions')
+          .doc(docId)
+          .get();
+
+      if (doc.exists) {
+        setState(() {
+          question = doc['question'].toString().replaceAll('\\n', '\n');
+          _currentYesCount = doc['yes'] ?? 0;
+          _currentNoCount = doc['no'] ?? 0;
+
+          // [핵심 수정] 저장된 답변이 있는지 확인
+          if (savedAnswer != null) {
+            // 1. 답변이 있으면 -> 결과 화면 보여주기
+            _isAnswered = true;
+            _myAnswer = savedAnswer;
+            _statsFadeController.value = 1.0;
+          } else {
+            // 2. 답변이 없으면(새로운 날) -> [초기화] 투표 화면 보여주기!
+            _isAnswered = false;
+            _myAnswer = null;
+            _statsFadeController.value = 0.0; // 애니메이션도 리셋
+          }
+
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          question = "준비된 질문이\n모두 끝났습니다.";
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print("에러: $e");
+      setState(() {
+        question = "인터넷 연결을\n확인해주세요.";
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _handleAnswer(String answer) async {
+    if (_isAnswered) return;
+
+    setState(() {
+      _isAnswered = true;
+      _myAnswer = answer;
+      if (answer == 'yes') _currentYesCount++;
+      if (answer == 'no') _currentNoCount++;
+    });
+    _statsFadeController.forward();
+
+    try {
+      String docId = "day_$day";
+      await FirebaseFirestore.instance
+          .collection('questions')
+          .doc(docId)
+          .update({answer: FieldValue.increment(1)});
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(docId, answer);
+    } catch (e) {
+      print("저장 실패: $e");
+    }
   }
 
   void _showPhaseReportOverlay() {
@@ -51,16 +242,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  void _handleAnswer(String answer) {
-    setState(() {
-      _isAnswered = true;
-      _myAnswer = answer;
-    });
-    _statsFadeController.forward();
-  }
-
   @override
   void dispose() {
+    _timer?.cancel(); // 타이머 해제 필수
     _statsFadeController.dispose();
     super.dispose();
   }
@@ -80,12 +264,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                SizedBox(height: size.height * 0.04), // 상단 여백 약간 줄임
-                // [수정된 헤더] 콤마 -> Day -> Phase 순서로 수직 배치
+                SizedBox(height: size.height * 0.04),
+
+                // [헤더]
                 Center(
                   child: Column(
                     children: [
-                      // 1. 지난 기록 버튼 (콤마 아이콘)
                       InkWell(
                         onTap: () {
                           Navigator.push(
@@ -100,20 +284,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           padding: const EdgeInsets.symmetric(
                             horizontal: 20,
                             vertical: 10,
-                          ), // 터치 영역 넉넉하게
+                          ),
                           child: Text(
                             ",",
                             style: GoogleFonts.nanumMyeongjo(
-                              fontSize: 32, // 크기를 키워서 장식처럼 보이게
+                              fontSize: 32,
                               color: AppTheme.softGrey.withOpacity(0.8),
-                              height: 0.5, // 텍스트 높이를 줄여서 Day와 가깝게 붙임
+                              height: 0.5,
                             ),
                           ),
                         ),
                       ),
-
-                      const SizedBox(height: 10), // 콤마와 Day 사이 간격
-                      // 2. Day 텍스트
+                      const SizedBox(height: 10),
                       Text(
                         "Day $day",
                         style: GoogleFonts.lato(
@@ -123,10 +305,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           fontWeight: FontWeight.w500,
                         ),
                       ),
-
                       const SizedBox(height: 10),
-
-                      // 3. Phase 타이틀
                       Text(
                         _getPhaseTitle(),
                         style: textTheme.labelSmall?.copyWith(
@@ -140,13 +319,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
                 SizedBox(height: size.height * 0.1),
 
+                // [질문]
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                  child: Text(question, style: textTheme.titleLarge),
+                  child: _isLoading
+                      ? const Center(
+                          child: CircularProgressIndicator(
+                            color: AppTheme.lightGrey,
+                          ),
+                        )
+                      : Text(question, style: textTheme.titleLarge),
                 ),
 
                 const Spacer(),
 
+                // [하단]
                 SizedBox(
                   height: size.height * 0.35,
                   child: _isAnswered
@@ -165,10 +352,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (day <= 7) return "Phase 1. 무뎌진 감각 깨우기";
     if (day <= 14) return "Phase 2. 잊고 지낸 온기 찾기";
     if (day <= 21) return "Phase 3. 나를 돌보는 마음";
-    return "Phase 4. 일상의 결 정돈하기";
+    if (day <= 28) return "Phase 4. 일상의 결 정돈하기";
+    if (day <= 35) return "Phase 5. 새로운 시선";
+    if (day <= 42) return "Phase 6. 소음 줄이기";
+    return "Phase 7. 단단한 중심";
   }
 
   Widget _buildButtonArea(TextTheme textTheme) {
+    if (_isLoading) return const SizedBox();
+
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -204,15 +396,21 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildStatsArea(TextTheme textTheme) {
+    int total = _currentYesCount + _currentNoCount;
+    double yesPercent = total == 0 ? 0 : _currentYesCount / total;
+    double noPercent = total == 0 ? 0 : _currentNoCount / total;
+
     return FadeTransition(
       opacity: _statsFadeAnimation,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          _buildStatRow("YES", 0.42, _myAnswer == 'yes'),
+          _buildStatRow("YES", yesPercent, _myAnswer == 'yes'),
           const SizedBox(height: 24),
-          _buildStatRow("NO", 0.58, _myAnswer == 'no'),
+          _buildStatRow("NO", noPercent, _myAnswer == 'no'),
+
           const SizedBox(height: 45),
+
           Text(
             _myAnswer == 'yes'
                 ? "오늘도 나를 아껴주어서 고마워요."
@@ -221,8 +419,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             style: textTheme.bodyMedium?.copyWith(fontSize: 15),
           ),
           const SizedBox(height: 12),
+          // [NEW] 실제 작동하는 타이머 표시
           Text(
-            "다음 쉼표까지  04 : 12 : 33",
+            "다음 질문까지  $_timeRemaining",
             style: GoogleFonts.lato(
               color: AppTheme.lightGrey,
               fontSize: 12,
